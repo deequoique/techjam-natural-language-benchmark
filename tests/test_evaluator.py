@@ -77,6 +77,21 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(summarize([result])["hit_at_10"], 1.0)
         self.assertEqual(summarize([result])["exact_top1"], 1.0)
 
+    def test_report_declares_smart_simulator_protocol(self):
+        from nl_benchmark.evaluator import evaluate_dataset
+
+        report = evaluate_dataset(
+            SpyAgent(self.sample.target_parent_asin),
+            self.catalog,
+            [self.sample],
+        )
+
+        self.assertEqual(report["protocol"]["simulator_version"], 2)
+        self.assertEqual(
+            report["protocol"]["question_routing"],
+            "bounded_natural_language_plus_structured",
+        )
+
     def test_wrong_similar_product_is_an_exact_miss(self):
         agent = WrongAgent(self.sample.target_parent_asin)
         result = evaluate_sample(agent, self.catalog, self.sample)

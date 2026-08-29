@@ -56,11 +56,19 @@ python3 -m nl_benchmark evaluate \
 `profile_hidden`、`clarification_required`、`negative_constraint`、
 `budget_rating` 和 `intent_override`（只有目录证据足够时才生成）。
 
-模拟器会同时利用 Agent 的结构化 `ask_attribute` 和自然语言问题，支持同义表达、
-模糊但相关的问题、重复提问、无偏好、无关问题、信息耗尽及最大轮数边界。它只
-能透露预先配置并由目标商品支持的事实，绝不发送 target ID。`intent_override`
+模拟器 v2 会同时解释 Agent 的结构化 `ask_attribute` 和自然语言问题，并把问题
+约束到 `brand`、`budget`、`feature` 等公开属性。自然语言可以在没有
+`ask_attribute` 时独立路由；结构化字段与文本冲突时会返回 `ambiguous`，不会猜测
+或泄露事实。它支持同义表达、语义重复、宽泛问题、无偏好、无关问题、信息耗尽及
+最大轮数边界。它只能透露预先配置并由目标商品支持的事实，绝不发送 target ID。`intent_override`
 会明确构造“旧的错误偏好 -> 新的目标事实”转移；新事实在 override 时更新模拟器
 候选状态，override 之前的推荐不会计入 exact 指标。
+
+明确询问已在 query/profile 中提供的属性时，v2 可以用 `reconfirmed` 重述该事实，
+但不会改变候选谓词或把它计作新的 clarification；反复换一种说法问同一属性会通过
+语义签名判为 `repeated`。宽泛的 `other` 问题最多披露一项匹配的隐藏事实，重复宽泛
+追问不会无限吐出答案。结果中的 `protocol.simulator_version` 固定为 `2`，应与旧版
+结果分开比较。
 
 评估外部 Agent 时，CLI 使用一次性的 JSONL IPC worker 子进程。父进程不导入
 `starter.agent`，目标/签名不进入 worker 的调用栈；worker 使用 `-B`、
@@ -90,6 +98,9 @@ python3 -m nl_benchmark evaluate \
 - `state`：当前品类、有效约束、查询证据、已问属性和耗尽状态；
 - `stages`：原始召回、特征排序、语义排序和最终输出的商品 ID；
 - `target_analysis`：由父评测器在 worker 返回后计算的目标商品阶段排名。
+- `question_interpretation`：自然语言与 `ask_attribute` 分别识别出的属性、冲突、
+  宽泛问题、置信度和稳定语义签名；
+- `reply_reason`：披露隐藏事实、重确认画像、语义重复、冲突或真正耗尽等原因。
 
 其中 `target_analysis` 永远不会发送给 worker。常用判断方式：
 

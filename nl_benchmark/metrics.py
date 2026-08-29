@@ -95,16 +95,26 @@ def summarize(results: Iterable[Mapping[str, Any]], *, max_turns: int = 10) -> d
     summary["by_scenario"] = by_scenario
     status_counts: Counter[str] = Counter()
     route_counts: Counter[str] = Counter()
+    question_reason_counts: Counter[str] = Counter()
+    reply_reason_counts: Counter[str] = Counter()
     for row in rows:
         for observation in _observations(row):
             status = observation.get("simulator_status")
             if status:
                 status_counts[str(status)] += 1
             diagnostics = observation.get("simulator_diagnostics")
-            if isinstance(diagnostics, Mapping) and diagnostics.get("route_reason"):
-                route_counts[str(diagnostics["route_reason"])] += 1
+            if isinstance(diagnostics, Mapping):
+                if diagnostics.get("route_reason"):
+                    route_counts[str(diagnostics["route_reason"])] += 1
+                if diagnostics.get("reply_reason"):
+                    reply_reason_counts[str(diagnostics["reply_reason"])] += 1
+                interpretation = diagnostics.get("question_interpretation")
+                if isinstance(interpretation, Mapping) and interpretation.get("reason"):
+                    question_reason_counts[str(interpretation["reason"])] += 1
     summary["simulator"] = {
         "status_counts": dict(sorted(status_counts.items())),
         "route_reason_counts": dict(sorted(route_counts.items())),
+        "question_reason_counts": dict(sorted(question_reason_counts.items())),
+        "reply_reason_counts": dict(sorted(reply_reason_counts.items())),
     }
     return summary

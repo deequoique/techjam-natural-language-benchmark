@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import re
 from typing import Any, Iterable, Mapping
 import uuid
 
 from .catalog import Catalog
 from .metrics import summarize
 from .schema import MAX_TURNS, TOP_K, Sample, project_for_agent
+from .question_interpreter import interpret_question
 from .simulator import IntelligentSimulator
-
-
-ASK_WORDS_RE = re.compile(r"\?|\b(ask|tell me|which|what|could you|do you need|prefer)\b", re.I)
 
 
 def normalize_recommendations(payload: object, catalog_ids: Iterable[str], *, limit: int = TOP_K) -> list[dict[str, Any]]:
@@ -147,7 +143,7 @@ def evaluate_sample(agent: Any, catalog: Catalog, sample: Sample, *, max_turns: 
             observation["simulator_revealed_fact_ids"] = list(simulator_reply.revealed_fact_ids)
             observation["simulator_candidate_count"] = simulator_reply.candidate_count
             observation["simulator_diagnostics"] = simulator_reply.diagnostics
-        elif ask_attribute is not None or ASK_WORDS_RE.search(response_message):
+        elif interpret_question(response_message, ask_attribute).question:
             simulator_reply = simulator.answer(ask_attribute, response_message, turn=turn)
             observation["simulator_status"] = simulator_reply.status
             observation["simulator_message"] = simulator_reply.message
@@ -176,6 +172,8 @@ def evaluate_dataset(agent: Any, catalog: Catalog, samples: Iterable[Sample], *,
     results = [evaluate_sample(agent, catalog, sample, max_turns=max_turns, top_k=top_k) for sample in samples]
     report = {
         "protocol": {
+            "simulator_version": 2,
+            "question_routing": "bounded_natural_language_plus_structured",
             "max_turns": int(max_turns),
             "top_k": int(top_k),
             "scoring": "exact parent_asin only",
