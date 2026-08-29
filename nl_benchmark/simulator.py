@@ -8,16 +8,15 @@ from typing import Any
 
 from .catalog import Catalog
 from .facts import ATTRIBUTE_ALIASES, fact_aliases, render_fact
+from .question_interpreter import (
+    ALLOWED_ATTRIBUTES,
+    QuestionInterpretation,
+    interpret_question,
+)
 from .schema import Fact, Sample, normalize_text
 
 
-ALLOWED_ATTRIBUTES = {
-    "category", "material", "color", "size", "style", "brand", "budget",
-    "feature", "use_case", "other",
-}
 NO_PREFERENCE_RE = re.compile(r"\b(no preference|don't care|do not care|anything is fine|any is fine|up to you|whatever)\b", re.I)
-QUESTION_RE = re.compile(r"\?|\b(what|which|can you|could you|would you|do you|tell me|how much|how many|is it|please tell|please specify)\b", re.I)
-BROAD_RE = re.compile(r"\b(more|else|specific|detail|details|tell me|what about|which one|recommend|preference|anything else)\b", re.I)
 
 
 @dataclass
@@ -54,9 +53,7 @@ def _contains_alias(message: str, alias: str) -> bool:
 
 
 def is_question(message: object, ask_attribute: object = None) -> bool:
-    if isinstance(ask_attribute, str) and ask_attribute.strip():
-        return True
-    return bool(QUESTION_RE.search(str(message or "")))
+    return interpret_question(message, ask_attribute).question
 
 
 class IntelligentSimulator:
@@ -70,8 +67,7 @@ class IntelligentSimulator:
         self.disclosed: list[Fact] = [*sample.query_facts, *sample.profile_facts]
         self._disclosed_ids = {fact.fact_id for fact in self.disclosed}
         self._revealed_ids: set[str] = set()
-        self._questions: list[str] = []
-        self._asked_signatures: set[tuple[str, str]] = set()
+        self._asked_signatures: set[str] = set()
         self._turns = 0
         self._candidate_ids = self.catalog.candidate_ids(self.disclosed)
         self._last_reply: SimulatorReply | None = None
@@ -84,50 +80,71 @@ class IntelligentSimulator:
     def exhausted(self) -> bool:
         return all(fact.fact_id in self._disclosed_ids for fact in self.hidden)
 
-    def _boundary(self, status: str, message: str, *, attributes: list[str] | None = None) -> SimulatorReply:
+    def _boundary(
+        self,
+        status: str,
+        message: str,
+        *,
+        attributes: list[str] | None = None,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> SimulatorReply:
+        details = {
+            "turn": self._turns,
+            "hidden_remaining": sum(
+                fact.fact_id not in self._disclosed_ids for fact in self.hidden
+            ),
+        }
+        details.update(diagnostics or {})
         reply = SimulatorReply(
             message=message,
             status=status,
             matched_attributes=attributes or [],
             candidate_count=self.candidate_count,
-            diagnostics={"turn": self._turns, "hidden_remaining": sum(fact.fact_id not in self._disclosed_ids for fact in self.hidden)},
+            diagnostics=details,
         )
         self._last_reply = reply
         return reply
 
-    def _route(self, ask_attribute: object, message: str) -> list[tuple[float, int, Fact, str]]:
-        structured = str(ask_attribute).casefold().strip() if isinstance(ask_attribute, str) else ""
-        if structured and structured not in ALLOWED_ATTRIBUTES:
-            return []
+    def _route(
+        self,
+        facts: list[Fact],
+        interpretation: QuestionInterpretation,
+        message: str,
+        *,
+        undisclosed_only: bool,
+    ) -> list[tuple[float, int, Fact, str]]:
         question = normalize_text(message)
         routed: list[tuple[float, int, Fact, str]] = []
         before = self.candidate_count
-        for index, fact in enumerate(self.hidden):
-            if fact.fact_id in self._disclosed_ids:
+        for fact in facts:
+            if undisclosed_only and fact.fact_id in self._disclosed_ids:
                 continue
             score = 0.0
             reasons: list[str] = []
-            if structured:
-                if structured == fact.attribute:
-                    score += 8.0
-                    reasons.append("structured_attribute")
-                elif structured == "other":
-                    # ``other`` is a boundary value, not permission to leak
-                    # an arbitrary hidden slot.  It only becomes useful when
-                    # the free-form text is a genuine broad question.
-                    if BROAD_RE.search(message):
-                        score += 0.5
-                elif structured == "use_case" and fact.attribute == "feature":
-                    score += 2.5
-                elif structured == "feature" and fact.attribute in {"feature", "use_case", "style"}:
-                    score += 3.0
+            if fact.attribute in interpretation.resolved_attributes:
+                score += 8.0
+                reasons.append("resolved_attribute")
+            elif "use_case" in interpretation.resolved_attributes and fact.attribute == "feature":
+                score += 2.5
+                reasons.append("compatible_feature")
+            elif "feature" in interpretation.resolved_attributes and fact.attribute in {"feature", "use_case", "style"}:
+                score += 3.0
+                reasons.append("compatible_feature")
+            elif interpretation.broad:
+                # A genuine "anything else?" question may disclose one
+                # arbitrary remaining preference.  It is deliberately weak
+                # so a specific natural-language/structured attribute always
+                # wins, and semantic-repeat protection prevents an Agent from
+                # draining the entire hidden signature by spamming ``other``.
+                score += 0.5
+                reasons.append("broad_fallback")
             for alias in fact_aliases(fact):
                 if _contains_alias(question, alias):
                     # Attribute labels carry more weight than a coincidental
                     # value word (e.g. “black” in an unrelated question).
                     score += 3.0 if alias in ATTRIBUTE_ALIASES.get(fact.attribute, ()) else 1.2
                     reasons.append(alias)
-            if score <= 0 and BROAD_RE.search(message):
+            if score <= 0 and interpretation.broad:
                 if fact.attribute in {"feature", "style", "use_case"} or fact.field in {"category", "store"}:
                     score = 0.7
                     reasons.append("broad_relevant")
@@ -139,6 +156,10 @@ class IntelligentSimulator:
             routed.append((score, gain, fact, ",".join(reasons)))
         routed.sort(key=lambda item: (-item[0], -item[1], item[2].fact_id))
         return routed
+
+    @staticmethod
+    def _question_diagnostics(interpretation: QuestionInterpretation) -> dict[str, Any]:
+        return {"question_interpretation": interpretation.as_dict()}
 
     def apply_override(self, override: object) -> SimulatorReply:
         """Apply an explicit old-decoy -> new-target transition.
@@ -188,29 +209,96 @@ class IntelligentSimulator:
 
         self._turns = max(self._turns + 1, int(turn or self._turns + 1))
         question = str(message or "")
+        interpretation = interpret_question(question, ask_attribute)
+        question_diagnostics = self._question_diagnostics(interpretation)
         if self._turns > self.max_turns:
-            return self._boundary("max_turns", "I have shared what I can within this conversation.")
+            return self._boundary(
+                "max_turns",
+                "I have shared what I can within this conversation.",
+                diagnostics=question_diagnostics,
+            )
         if NO_PREFERENCE_RE.search(question):
-            return self._boundary("no_preference", "I don't have a preference on that point; please use your best judgment.")
-        if not is_question(question, ask_attribute):
-            return self._boundary("unsupported", "Please ask me a question about one specific product attribute.")
-        normalized_question = normalize_text(question)
-        structured_key = str(ask_attribute).casefold().strip() if isinstance(ask_attribute, str) else ""
-        question_signature = (structured_key, normalized_question)
-        if normalized_question and normalized_question in self._questions:
-            return self._boundary("repeated", "I already answered that question; please use the detail I shared earlier.")
-        if question_signature in self._asked_signatures:
-            return self._boundary("repeated", "I already answered that question; please use the detail I shared earlier.")
-        self._questions.append(normalized_question)
-        self._asked_signatures.add(question_signature)
-        if self.exhausted:
-            return self._boundary("exhausted", "I have no additional preferences to add.")
-        routed = self._route(ask_attribute, question)
+            return self._boundary(
+                "no_preference",
+                "I don't have a preference on that point; please use your best judgment.",
+                diagnostics=question_diagnostics,
+            )
+        if not interpretation.question:
+            return self._boundary(
+                "unsupported",
+                "Please ask me a question about one specific product attribute.",
+                diagnostics=question_diagnostics,
+            )
+        if interpretation.conflict:
+            return self._boundary(
+                "ambiguous",
+                "The question and requested attribute do not match; please ask one clear product question.",
+                diagnostics={**question_diagnostics, "reply_reason": "structured_text_conflict"},
+            )
+        if not interpretation.resolved_attributes and not interpretation.broad:
+            return self._boundary(
+                "unsupported",
+                "Could you ask about one specific product attribute, such as material, color, price, or a feature?",
+                diagnostics=question_diagnostics,
+            )
+        signature = interpretation.semantic_signature
+        if signature in self._asked_signatures:
+            return self._boundary(
+                "repeated",
+                "I already answered that question; please use the detail I shared earlier.",
+                diagnostics={**question_diagnostics, "reply_reason": "semantic_repeat"},
+            )
+
+        routed = self._route(
+            self.hidden,
+            interpretation,
+            question,
+            undisclosed_only=True,
+        )
+        if not routed and interpretation.resolved_attributes and not interpretation.broad:
+            # Explicit questions may reconfirm facts that were already present
+            # in the query/profile.  This is realistic but does not add new
+            # evidence or change the benchmark candidate predicate.
+            reconfirmed = self._route(
+                self.disclosed,
+                interpretation,
+                question,
+                undisclosed_only=False,
+            )
+            if reconfirmed:
+                _score, _gain, fact, reason = reconfirmed[0]
+                self._asked_signatures.add(signature)
+                reply = SimulatorReply(
+                    message=render_fact(fact, variant=self._turns, reply=True),
+                    status="reconfirmed",
+                    matched_attributes=[fact.attribute],
+                    candidate_count=self.candidate_count,
+                    diagnostics={
+                        **question_diagnostics,
+                        "turn": self._turns,
+                        "route_reason": reason,
+                        "reply_reason": "reconfirmed_disclosed_fact",
+                        "hidden_remaining": sum(
+                            item.fact_id not in self._disclosed_ids for item in self.hidden
+                        ),
+                    },
+                )
+                self._last_reply = reply
+                return reply
         if not routed:
-            if isinstance(ask_attribute, str) and ask_attribute and ask_attribute not in ALLOWED_ATTRIBUTES:
-                return self._boundary("unsupported", "I can answer questions about category, material, color, size, style, brand, budget, or features.")
-            return self._boundary("unsupported", "Could you ask about one specific product attribute, such as material, color, price, or a feature?")
+            if self.exhausted:
+                return self._boundary(
+                    "exhausted",
+                    "I have no additional preferences to add.",
+                    diagnostics={**question_diagnostics, "reply_reason": "no_hidden_facts"},
+                )
+            return self._boundary(
+                "unsupported",
+                "Could you ask about one specific product attribute, such as material, color, price, or a feature?",
+                diagnostics={**question_diagnostics, "reply_reason": "no_matching_fact"},
+            )
         _, gain, fact, reason = routed[0]
+        self._asked_signatures.add(signature)
         self.disclosed.append(fact)
         self._disclosed_ids.add(fact.fact_id)
         self._revealed_ids.add(fact.fact_id)
@@ -224,8 +312,10 @@ class IntelligentSimulator:
             diagnostics={
                 "turn": self._turns,
                 "route_reason": reason,
+                "reply_reason": "revealed_hidden_fact",
                 "information_gain": gain,
                 "hidden_remaining": sum(item.fact_id not in self._disclosed_ids for item in self.hidden),
+                **question_diagnostics,
             },
         )
         self._last_reply = reply
