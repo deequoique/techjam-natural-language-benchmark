@@ -1,0 +1,12 @@
+[project]
+name = "techjam-natural-language-benchmark"
+version = "0.1.0"
+description = "A deterministic, target-exact natural-language benchmark for TechJam shopping agents."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+nl-benchmark = "nl_benchmark.cli:main"
+
+[tool.unittest]
+testpaths = ["tests"]
