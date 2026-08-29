@@ -264,7 +264,19 @@ class Catalog:
             # normal signature path.  Verbose feature/description text is
             # matched by a bounded scan when requested; indexing every prose
             # bullet in the 58MB catalog makes startup needlessly expensive.
-            for field in ("category", "category_path", "store", "title_token"):
+            # ``material`` and ``color`` are also used by generated negative
+            # constraints.  Leaving them on the scan path makes a 100-sample
+            # dataset repeatedly normalize the searchable text of all 50k
+            # products.  Indexing the small, closed vocabularies once keeps
+            # candidate semantics identical and makes generation scale.
+            for field in (
+                "category",
+                "category_path",
+                "store",
+                "title_token",
+                "material",
+                "color",
+            ):
                 for value in _values_for_field(product, field):
                     buckets[(field, "eq", value)].add(parent_asin)
             for key, value in product.details.items():

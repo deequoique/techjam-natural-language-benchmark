@@ -69,6 +69,24 @@ class CatalogAndFactsTests(unittest.TestCase):
         self.assertEqual(self.catalog.candidate_ids([color]), {"P000000001", "P000000003"})
         self.assertEqual(self.catalog.candidate_ids([color, budget]), {"P000000001"})
 
+    def test_derived_material_and_color_predicates_use_catalog_semantics(self):
+        material = Fact("material", "eq", "nylon", "derived", attribute="material", display="Nylon")
+        red = Fact("color", "eq", "red", "derived", attribute="color", display="Red")
+        not_red = Fact("color", "neq", "red", "derived", attribute="color", display="Red")
+
+        self.assertEqual(
+            self.catalog.candidate_ids([material]),
+            {"P000000001", "P000000002", "P000000003"},
+        )
+        self.assertEqual(
+            self.catalog.candidate_ids([material, red]),
+            {"P000000001", "P000000003"},
+        )
+        self.assertEqual(
+            self.catalog.candidate_ids([not_red]),
+            {"P000000002", "P000000004"},
+        )
+
     def test_feature_and_title_facts_are_grounded(self):
         product = self.catalog.get("P000000001")
         facts = extract_facts(product)
