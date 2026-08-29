@@ -43,6 +43,17 @@ python3 -m nl_benchmark evaluate \
   --dataset outputs/smoke.jsonl --output outputs/smoke-results.json
 ```
 
+仓库内还提供一份已冻结的 100 题集，可直接用于复现实验：
+
+```bash
+python3 -m nl_benchmark validate \
+  --catalog /path/to/techjam-conversational-search-main/data/catalog.jsonl \
+  --dataset outputs/frozen-100-seed-20260830.jsonl
+```
+
+这份题集由本地确定性生成器创建，不调用大语言模型；大模型只会在评测外部 Agent
+时按显式配置参与意图结构化或语义排序。
+
 `generate` 会以固定 seed 产生可审计 JSONL；普通 `validate` 和 `evaluate` 不会
 联网、不重新生成题目。完整 catalog 会占用一定内存（索引和商品记录都在进程
 中），但不会被复制进本项目。显式传入 `--scenario` 时，如果该场景无法构造会
